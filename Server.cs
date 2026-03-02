@@ -36,6 +36,7 @@ class ServerForm : Form
 
     Bitmap prevBmp = null;
     int keyframeCounter = 0;
+    readonly ImageCodecInfo jpegEncoder;
 
     // Ekran boyutu ve hedef boyut
     int fullW = 0, fullH = 0;
@@ -44,6 +45,8 @@ class ServerForm : Form
 
     public ServerForm()
     {
+        jpegEncoder = GetJpegEncoder();
+
         this.Text = "Screen Server (60 FPS • Delta • Control)";
         this.Width = 520; this.Height = 220;
         this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -217,13 +220,9 @@ class ServerForm : Form
                     { payload = EncodeJpeg(currentFull, jpegQuality); isFull = true; }
                     else
                     {
-                        using (Bitmap prevScaled = (Bitmap)prevBmp.Clone())
-                        using (Bitmap currScaled = (Bitmap)currentFull.Clone())
-                        {
-                            byte[] diff = GetDiffBytes(prevScaled, currScaled);
-                            if (diff.Length > 0 && diff.Length < 250000) { payload = diff; isFull = false; }
-                            else { payload = EncodeJpeg(currentFull, jpegQuality); isFull = true; }
-                        }
+                        byte[] diff = GetDiffBytes(prevBmp, currentFull);
+                        if (diff.Length > 0 && diff.Length < 250000) { payload = diff; isFull = false; }
+                        else { payload = EncodeJpeg(currentFull, jpegQuality); isFull = true; }
                     }
 
                     // İmleç: fiziksel → video uzayı
@@ -380,10 +379,13 @@ class ServerForm : Form
     {
         using (MemoryStream ms = new MemoryStream())
         {
-            ImageCodecInfo enc = GetJpegEncoder();
-            EncoderParameters ep = new EncoderParameters(1);
-            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-            bmp.Save(ms, enc, ep);
+            if (jpegEncoder == null) bmp.Save(ms, ImageFormat.Jpeg);
+            else
+            {
+                EncoderParameters ep = new EncoderParameters(1);
+                ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+                bmp.Save(ms, jpegEncoder, ep);
+            }
             return ms.ToArray();
         }
     }
@@ -403,28 +405,34 @@ class ServerForm : Form
         using (BinaryWriter bw = new BinaryWriter(ms))
         {
             bool any = false;
-            int y = 0;
-            while (y < curr.Height)
+            Rectangle fullRect = new Rectangle(0, 0, curr.Width, curr.Height);
+            BitmapData d1 = prev.LockBits(fullRect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            BitmapData d2 = curr.LockBits(fullRect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            try
             {
-                int x = 0;
-                while (x < curr.Width)
+                int y = 0;
+                while (y < curr.Height)
                 {
-                    Rectangle rect = new Rectangle(x, y,
-                        Math.Min(block, curr.Width - x),
-                        Math.Min(block, curr.Height - y));
-
-                    using (Bitmap b1 = prev.Clone(rect, PixelFormat.Format24bppRgb))
-                    using (Bitmap b2 = curr.Clone(rect, PixelFormat.Format24bppRgb))
+                    int x = 0;
+                    while (x < curr.Width)
                     {
-                        if (!AreBlocksEqual(b1, b2))
+                        Rectangle rect = new Rectangle(x, y,
+                            Math.Min(block, curr.Width - x),
+                            Math.Min(block, curr.Height - y));
+
+                        if (!AreBlocksEqual(d1, d2, rect))
                         {
                             any = true;
+                            using (Bitmap blockBmp = curr.Clone(rect, PixelFormat.Format24bppRgb))
                             using (MemoryStream bs = new MemoryStream())
                             {
-                                ImageCodecInfo enc = GetJpegEncoder();
-                                EncoderParameters ep = new EncoderParameters(1);
-                                ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 60L);
-                                b2.Save(bs, enc, ep);
+                                if (jpegEncoder == null) blockBmp.Save(bs, ImageFormat.Jpeg);
+                                else
+                                {
+                                    EncoderParameters ep = new EncoderParameters(1);
+                                    ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 60L);
+                                    blockBmp.Save(bs, jpegEncoder, ep);
+                                }
                                 byte[] data = bs.ToArray();
 
                                 bw.Write((short)rect.X);
@@ -435,37 +443,35 @@ class ServerForm : Form
                                 bw.Write(data);
                             }
                         }
+                        }
+                        x += block;
                     }
-                    x += block;
+                    y += block;
                 }
-                y += block;
             }
+            finally { prev.UnlockBits(d1); curr.UnlockBits(d2); }
             if (any) return ms.ToArray();
             return new byte[0];
         }
     }
 
-    bool AreBlocksEqual(Bitmap a, Bitmap b)
+    unsafe bool AreBlocksEqual(BitmapData d1, BitmapData d2, Rectangle rect)
     {
-        if (a.Width != b.Width || a.Height != b.Height) return false;
-        Rectangle rect = new Rectangle(0, 0, a.Width, a.Height);
-        BitmapData d1 = a.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-        BitmapData d2 = b.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-        try
+        int y = 0;
+        while (y < rect.Height)
         {
-            int rowBytes = a.Width * 3, y = 0;
-            unsafe
+            byte* row1 = (byte*)d1.Scan0 + ((rect.Y + y) * d1.Stride) + (rect.X * 3);
+            byte* row2 = (byte*)d2.Scan0 + ((rect.Y + y) * d2.Stride) + (rect.X * 3);
+            int x = 0;
+            int rowBytes = rect.Width * 3;
+            while (x < rowBytes)
             {
-                byte* p1 = (byte*)d1.Scan0; byte* p2 = (byte*)d2.Scan0;
-                while (y < a.Height)
-                {
-                    int x = 0; while (x < rowBytes) { if (p1[x] != p2[x]) return false; x++; }
-                    p1 += d1.Stride; p2 += d2.Stride; y++;
-                }
+                if (row1[x] != row2[x]) return false;
+                x++;
             }
-            return true;
+            y++;
         }
-        finally { a.UnlockBits(d1); b.UnlockBits(d2); }
+        return true;
     }
 
     // Win32 / Input
