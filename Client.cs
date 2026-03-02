@@ -13,8 +13,9 @@ class ClientForm : Form
 {
     // Top bar
     TextBox txtIp, txtPort;
-    Button btnConnect, btnControl, btnScan;
-    Label lblInfo;
+    Button btnConnect, btnControl, btnScan, btnSnapshot, btnViewMode;
+    CheckBox chkTopMost;
+    Label lblInfo, lblMetrics;
 
     // Layout
     TableLayoutPanel layout;
@@ -44,6 +45,10 @@ class ClientForm : Form
     // Video boyutu (server gönderiyor)
     int serverWidth = 0, serverHeight = 0;
     int cursorX = 0, cursorY = 0; // video koord
+    bool fillMode = false;
+    long statsBytes = 0;
+    int statsFrames = 0;
+    DateTime statsWindowStart = DateTime.UtcNow;
 
     // Split yönetimi
     bool splitterReady = false;   // ilk güvenli ayar yapıldı mı
@@ -58,7 +63,8 @@ class ClientForm : Form
         this.KeyPreview = true;
 
         // ---- TOP BAR ----
-        Panel top = new Panel { Dock = DockStyle.Fill, Height = 36 };
+        this.BackColor = Color.FromArgb(245, 248, 252);
+        Panel top = new Panel { Dock = DockStyle.Fill, Height = 36, BackColor = Color.FromArgb(229, 238, 250) };
 
         Label lblI = new Label { Left = 8, Top = 9, Width = 70, Text = "Server IP:" };
         txtIp = new TextBox { Left = 78, Top = 6, Width = 160, Text = "192.168.1.10" };
@@ -68,11 +74,15 @@ class ClientForm : Form
         btnConnect = new Button { Left = 350, Top = 4, Width = 100, Height = 28, Text = "Connect" };
         btnControl = new Button { Left = 456, Top = 4, Width = 110, Height = 28, Text = "Control: OFF" };
         btnScan    = new Button { Left = 572, Top = 4, Width = 90, Height = 28, Text = "Scan /24" };
-        lblInfo    = new Label  { Left = 670, Top = 9, Width = 700, Height = 20, Text = "Durum: Bağlı değil" };
+        btnSnapshot= new Button { Left = 666, Top = 4, Width = 95, Height = 28, Text = "Snapshot" };
+        btnViewMode= new Button { Left = 766, Top = 4, Width = 100, Height = 28, Text = "View: FIT" };
+        chkTopMost = new CheckBox { Left = 872, Top = 9, Width = 82, Text = "TopMost" };
+        lblInfo    = new Label  { Left = 960, Top = 9, Width = 500, Height = 20, Text = "Durum: Bağlı değil" };
 
         top.Controls.Add(lblI); top.Controls.Add(txtIp);
         top.Controls.Add(lblP); top.Controls.Add(txtPort);
         top.Controls.Add(btnConnect); top.Controls.Add(btnControl); top.Controls.Add(btnScan);
+        top.Controls.Add(btnSnapshot); top.Controls.Add(btnViewMode); top.Controls.Add(chkTopMost);
         top.Controls.Add(lblInfo);
 
         // ---- SPLIT (min değerleri ŞİMDİ ayarlamıyoruz!) ----
@@ -83,10 +93,12 @@ class ClientForm : Form
             // Panel1MinSize/Panel2MinSize/Divider henüz YOK → erken layout patlamaz
         };
 
-        lstServers = new ListBox { Dock = DockStyle.Fill };
+        lstServers = new ListBox { Dock = DockStyle.Fill, BackColor = Color.WhiteSmoke };
         pb = new PictureBox { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle, SizeMode = PictureBoxSizeMode.Zoom };
+        lblMetrics = new Label { Dock = DockStyle.Bottom, Height = 24, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0), BackColor = Color.FromArgb(232, 243, 255), Text = "FPS: 0 | Ağ: 0 KB/s | Görünüm: FIT" };
 
         split.Panel1.Controls.Add(lstServers);
+        split.Panel2.Controls.Add(lblMetrics);
         split.Panel2.Controls.Add(pb);
 
         // ---- Ana Layout ----
@@ -102,6 +114,9 @@ class ClientForm : Form
         btnConnect.Click += BtnConnect_Click;
         btnControl.Click += BtnControl_Click;
         btnScan.Click    += BtnScan_Click;
+        btnSnapshot.Click+= BtnSnapshot_Click;
+        btnViewMode.Click+= BtnViewMode_Click;
+        chkTopMost.CheckedChanged += (s, e) => this.TopMost = chkTopMost.Checked;
 
         pb.MouseMove += Pb_MouseMove;
         pb.MouseDown += Pb_MouseDown;
@@ -112,6 +127,12 @@ class ClientForm : Form
         this.KeyUp   += Form_KeyUp;
 
         this.FormClosing += ClientForm_FormClosing;
+
+        ApplyButtonStyle(btnConnect, Color.FromArgb(33, 150, 243));
+        ApplyButtonStyle(btnControl, Color.FromArgb(103, 58, 183));
+        ApplyButtonStyle(btnScan, Color.FromArgb(0, 150, 136));
+        ApplyButtonStyle(btnSnapshot, Color.FromArgb(255, 152, 0));
+        ApplyButtonStyle(btnViewMode, Color.FromArgb(96, 125, 139));
 
         // ---- SplitterDistance güvenli ayarlama kancaları ----
         split.HandleCreated += (s, e) => InitSplitterSafe();
@@ -249,18 +270,50 @@ class ClientForm : Form
         try { if (stream != null) stream.Close(); } catch { }
         try { if (client != null) client.Close(); } catch { }
         try { if (worker != null) worker.Join(200); } catch { }
-        btnConnect.Text = "Connect";
-        lblInfo.Text = "Durum: Bağlı değil";
+        SafeUI(delegate
+        {
+            btnConnect.Text = "Connect";
+            lblInfo.Text = "Durum: Bağlı değil";
+        });
+        statsBytes = 0; statsFrames = 0; statsWindowStart = DateTime.UtcNow;
+        SafeUI(delegate { lblMetrics.Text = "FPS: 0 | Ağ: 0 KB/s | Görünüm: " + (fillMode ? "FILL" : "FIT"); });
         lock (bmpLock)
         {
             if (currentBmp != null) { currentBmp.Dispose(); currentBmp = null; }
             if (backBuffer != null) { backBuffer.Dispose(); backBuffer = null; }
-            pb.Image = null;
+            SafeUI(delegate { pb.Image = null; });
             serverWidth = serverHeight = 0;
         }
     }
 
     // ---- Control link ----
+    void BtnSnapshot_Click(object sender, EventArgs e)
+    {
+        Bitmap snapshot = null;
+        lock (bmpLock)
+        {
+            if (currentBmp != null) snapshot = (Bitmap)currentBmp.Clone();
+        }
+        if (snapshot == null) { MessageBox.Show("Kaydedilecek görüntü yok."); return; }
+        try
+        {
+            string dir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            string path = Path.Combine(dir, "remote_snapshot_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".png");
+            snapshot.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            lblInfo.Text = "Snapshot kaydedildi: " + path;
+        }
+        catch (Exception ex) { MessageBox.Show("Snapshot kaydedilemedi: " + ex.Message); }
+        finally { snapshot.Dispose(); }
+    }
+
+    void BtnViewMode_Click(object sender, EventArgs e)
+    {
+        fillMode = !fillMode;
+        pb.SizeMode = fillMode ? PictureBoxSizeMode.StretchImage : PictureBoxSizeMode.Zoom;
+        btnViewMode.Text = "View: " + (fillMode ? "FILL" : "FIT");
+        lblMetrics.Text = "FPS: 0 | Ağ: 0 KB/s | Görünüm: " + (fillMode ? "FILL" : "FIT");
+    }
+
     void StartControl()
     {
         if (controlOn) return;
@@ -286,7 +339,7 @@ class ClientForm : Form
     void StopControl()
     {
         controlOn = false;
-        btnControl.Text = "Control: OFF";
+        SafeUI(delegate { btnControl.Text = "Control: OFF"; });
         try { if (ctrlWriter != null) ctrlWriter.Close(); } catch { }
         try { if (ctrlStream != null) ctrlStream.Close(); } catch { }
         try { if (ctrlClient != null) ctrlClient.Close(); } catch { }
@@ -315,6 +368,8 @@ class ClientForm : Form
 
                 if (receiveBuffer.Length < dataLen) receiveBuffer = new byte[dataLen];
                 if (!ReadExact(stream, receiveBuffer, 0, dataLen)) break;
+                statsBytes += dataLen + 16;
+                statsFrames++;
 
                 using (MemoryStream ms = new MemoryStream(receiveBuffer, 0, dataLen, false, true))
                 {
@@ -363,6 +418,8 @@ class ClientForm : Form
                     }
                 }
 
+                UpdateStatsIfNeeded();
+
                 // UI (tek backBuffer)
                 if (pb.IsHandleCreated && !paintInProgress)
                 {
@@ -401,6 +458,41 @@ class ClientForm : Form
         }
 
         Disconnect();
+    }
+
+    void UpdateStatsIfNeeded()
+    {
+        DateTime now = DateTime.UtcNow;
+        double sec = (now - statsWindowStart).TotalSeconds;
+        if (sec < 1.0) return;
+
+        int fps = (int)(statsFrames / sec);
+        double kbps = (statsBytes / 1024.0) / sec;
+        string text = "FPS: " + fps + " | Ağ: " + kbps.ToString("0") + " KB/s | Görünüm: " + (fillMode ? "FILL" : "FIT");
+        statsFrames = 0;
+        statsBytes = 0;
+        statsWindowStart = now;
+
+        SafeUI(delegate { lblMetrics.Text = text; });
+    }
+
+    void SafeUI(Action a)
+    {
+        if (!this.IsHandleCreated) return;
+        try
+        {
+            if (this.InvokeRequired) this.BeginInvoke(a);
+            else a();
+        }
+        catch { }
+    }
+
+    void ApplyButtonStyle(Button b, Color color)
+    {
+        b.FlatStyle = FlatStyle.Flat;
+        b.FlatAppearance.BorderSize = 0;
+        b.BackColor = color;
+        b.ForeColor = Color.White;
     }
 
     // ---- Mouse & Keyboard capture (video koord gönder) ----

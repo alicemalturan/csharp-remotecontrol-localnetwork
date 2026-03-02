@@ -20,7 +20,8 @@ class ServerForm : Form
     TextBox txtPort;
     Button btnStart;
     CheckBox chkAllowControl;
-    Label lblStatus;
+    CheckBox chkDrawCursor;
+    Label lblStatus, lblIps;
 
     TcpListener listener;
     TcpClient client;
@@ -33,6 +34,8 @@ class ServerForm : Form
     TcpClient ctrlClient;
     NetworkStream ctrlStream;
     Thread ctrlWorker;
+    volatile bool allowControl = false;
+    volatile bool drawCursor = true;
 
     Bitmap prevBmp = null;
     int keyframeCounter = 0;
@@ -49,6 +52,7 @@ class ServerForm : Form
 
         this.Text = "Screen Server (60 FPS • Delta • Control)";
         this.Width = 520; this.Height = 220;
+        this.BackColor = Color.FromArgb(245, 248, 252);
         this.FormBorderStyle = FormBorderStyle.FixedDialog;
         this.MaximizeBox = false;
 
@@ -57,17 +61,29 @@ class ServerForm : Form
 
         chkAllowControl = new CheckBox(); chkAllowControl.Left = 220; chkAllowControl.Top = 18; chkAllowControl.Width = 200; chkAllowControl.Text = "Allow Remote Control";
         chkAllowControl.Checked = false;
+        chkAllowControl.CheckedChanged += delegate { allowControl = chkAllowControl.Checked; };
 
-        btnStart = new Button(); btnStart.Left = 12; btnStart.Top = 52; btnStart.Width = 480; btnStart.Height = 32; btnStart.Text = "Start Server";
+        chkDrawCursor = new CheckBox(); chkDrawCursor.Left = 220; chkDrawCursor.Top = 42; chkDrawCursor.Width = 200; chkDrawCursor.Text = "Draw Cursor";
+        chkDrawCursor.Checked = true;
+        chkDrawCursor.CheckedChanged += delegate { drawCursor = chkDrawCursor.Checked; };
+
+        btnStart = new Button(); btnStart.Left = 12; btnStart.Top = 72; btnStart.Width = 480; btnStart.Height = 32; btnStart.Text = "Start Server";
+        btnStart.FlatStyle = FlatStyle.Flat; btnStart.FlatAppearance.BorderSize = 0; btnStart.BackColor = Color.FromArgb(33, 150, 243); btnStart.ForeColor = Color.White;
         btnStart.Click += new EventHandler(BtnStart_Click);
 
-        lblStatus = new Label(); lblStatus.Left = 12; lblStatus.Top = 96; lblStatus.Width = 480; lblStatus.Height = 70; lblStatus.Text = "Durum: Beklemede";
+        lblIps = new Label(); lblIps.Left = 12; lblIps.Top = 48; lblIps.Width = 200; lblIps.Height = 20; lblIps.Text = "IP: " + GetLocalIPv4();
+        lblStatus = new Label(); lblStatus.Left = 12; lblStatus.Top = 112; lblStatus.Width = 480; lblStatus.Height = 70; lblStatus.Text = "Durum: Beklemede";
 
         this.Controls.Add(lblP); this.Controls.Add(txtPort);
         this.Controls.Add(chkAllowControl);
+        this.Controls.Add(chkDrawCursor);
+        this.Controls.Add(lblIps);
         this.Controls.Add(btnStart); this.Controls.Add(lblStatus);
 
         this.FormClosing += new FormClosingEventHandler(ServerForm_FormClosing);
+
+        allowControl = chkAllowControl.Checked;
+        drawCursor = chkDrawCursor.Checked;
     }
 
     void ServerForm_FormClosing(object sender, FormClosingEventArgs e) { StopServer(); }
@@ -280,7 +296,7 @@ class ServerForm : Form
             try
             {
                 byte type = br.ReadByte();
-                if (!chkAllowControl.Checked) { SkipPayload(br, type); continue; }
+                if (!allowControl) { SkipPayload(br, type); continue; }
 
                 if (type == 1) // move (video koord)
                 {
@@ -350,7 +366,10 @@ class ServerForm : Form
         Rectangle bounds = Screen.PrimaryScreen.Bounds;
         Bitmap full = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
         using (Graphics g = Graphics.FromImage(full))
-        { g.CopyFromScreen(Point.Empty, Point.Empty, full.Size); DrawCursor(g); }
+        {
+            g.CopyFromScreen(Point.Empty, Point.Empty, full.Size);
+            if (drawCursor) DrawCursor(g);
+        }
 
         Bitmap bmp = new Bitmap(tW, tH, PixelFormat.Format24bppRgb);
         using (Graphics g2 = Graphics.FromImage(bmp))
@@ -485,6 +504,21 @@ class ServerForm : Form
     [DllImport("user32.dll")] static extern bool SetCursorPos(int X, int Y);
     [DllImport("user32.dll")] static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, uint dwExtraInfo);
     [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    string GetLocalIPv4()
+    {
+        try
+        {
+            IPHostEntry he = Dns.GetHostEntry(Dns.GetHostName());
+            for (int i = 0; i < he.AddressList.Length; i++)
+            {
+                IPAddress ip = he.AddressList[i];
+                if (ip.AddressFamily == AddressFamily.InterNetwork) return ip.ToString();
+            }
+        }
+        catch { }
+        return "bulunamadı";
+    }
 
     [STAThread]
     static void Main() { Application.EnableVisualStyles(); Application.Run(new ServerForm()); }
