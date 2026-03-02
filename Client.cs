@@ -31,6 +31,7 @@ class ClientForm : Form
     // Control link
     TcpClient ctrlClient;
     NetworkStream ctrlStream;
+    BinaryWriter ctrlWriter;
     volatile bool controlOn = false;
 
     // Video buffers
@@ -38,6 +39,7 @@ class ClientForm : Form
     readonly object bmpLock = new object();
     Bitmap backBuffer = null;
     volatile bool paintInProgress = false;
+    byte[] receiveBuffer = new byte[0];
 
     // Video boyutu (server gönderiyor)
     int serverWidth = 0, serverHeight = 0;
@@ -269,6 +271,7 @@ class ClientForm : Form
             ctrlClient = new TcpClient { NoDelay = true, SendBufferSize = 64 * 1024, ReceiveBufferSize = 64 * 1024 };
             ctrlClient.Connect(ip, port + 1);
             ctrlStream = ctrlClient.GetStream();
+            ctrlWriter = new BinaryWriter(ctrlStream);
             controlOn = true;
             btnControl.Text = "Control: ON";
             lblInfo.Text = "Durum: Video + Control bağlı";
@@ -284,8 +287,10 @@ class ClientForm : Form
     {
         controlOn = false;
         btnControl.Text = "Control: OFF";
+        try { if (ctrlWriter != null) ctrlWriter.Close(); } catch { }
         try { if (ctrlStream != null) ctrlStream.Close(); } catch { }
         try { if (ctrlClient != null) ctrlClient.Close(); } catch { }
+        ctrlWriter = null;
         ctrlStream = null; ctrlClient = null;
     }
 
@@ -308,10 +313,10 @@ class ClientForm : Form
 
                 if (dataLen <= 0 || dataLen > 50000000) break;
 
-                byte[] data = new byte[dataLen];
-                if (!ReadExact(stream, data, 0, dataLen)) break;
+                if (receiveBuffer.Length < dataLen) receiveBuffer = new byte[dataLen];
+                if (!ReadExact(stream, receiveBuffer, 0, dataLen)) break;
 
-                using (MemoryStream ms = new MemoryStream(data))
+                using (MemoryStream ms = new MemoryStream(receiveBuffer, 0, dataLen, false, true))
                 {
                     if (isFull)
                     {
@@ -336,17 +341,17 @@ class ClientForm : Form
                             if (currentBmp == null) continue;
 
                             int pos = 0;
-                            while (pos + 12 <= data.Length)
+                            while (pos + 12 <= dataLen)
                             {
-                                short bx = BitConverter.ToInt16(data, pos); pos += 2;
-                                short by = BitConverter.ToInt16(data, pos); pos += 2;
-                                short bw = BitConverter.ToInt16(data, pos); pos += 2;
-                                short bh = BitConverter.ToInt16(data, pos); pos += 2;
-                                int blen = BitConverter.ToInt32(data, pos); pos += 4;
+                                short bx = BitConverter.ToInt16(receiveBuffer, pos); pos += 2;
+                                short by = BitConverter.ToInt16(receiveBuffer, pos); pos += 2;
+                                short bw = BitConverter.ToInt16(receiveBuffer, pos); pos += 2;
+                                short bh = BitConverter.ToInt16(receiveBuffer, pos); pos += 2;
+                                int blen = BitConverter.ToInt32(receiveBuffer, pos); pos += 4;
 
-                                if (blen <= 0 || pos + blen > data.Length) break;
+                                if (blen <= 0 || pos + blen > dataLen) break;
 
-                                using (MemoryStream bms = new MemoryStream(data, pos, blen, false))
+                                using (MemoryStream bms = new MemoryStream(receiveBuffer, pos, blen, false))
                                 using (Bitmap patch = new Bitmap(bms))
                                 using (Graphics g = Graphics.FromImage(currentBmp))
                                 {
@@ -401,49 +406,51 @@ class ClientForm : Form
     // ---- Mouse & Keyboard capture (video koord gönder) ----
     void Pb_MouseMove(object sender, MouseEventArgs e)
     {
-        if (!controlOn || ctrlStream == null) return;
+        if (!controlOn || ctrlWriter == null) return;
         int vx, vy;
         if (!TranslateToVideoCoords(e.X, e.Y, out vx, out vy)) return;
-        try
-        {
-            BinaryWriter bw = new BinaryWriter(ctrlStream);
-            bw.Write((byte)1); bw.Write(vx); bw.Write(vy); bw.Flush();
-        }
-        catch { }
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)1); bw.Write(vx); bw.Write(vy); });
     }
 
     void Pb_MouseDown(object sender, MouseEventArgs e)
     {
-        if (!controlOn || ctrlStream == null) return;
-        try { var bw = new BinaryWriter(ctrlStream); bw.Write((byte)2); bw.Write(MouseBtnToInt(e.Button)); bw.Flush(); }
-        catch { }
+        if (!controlOn || ctrlWriter == null) return;
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)2); bw.Write(MouseBtnToInt(e.Button)); });
     }
 
     void Pb_MouseUp(object sender, MouseEventArgs e)
     {
-        if (!controlOn || ctrlStream == null) return;
-        try { var bw = new BinaryWriter(ctrlStream); bw.Write((byte)3); bw.Write(MouseBtnToInt(e.Button)); bw.Flush(); }
-        catch { }
+        if (!controlOn || ctrlWriter == null) return;
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)3); bw.Write(MouseBtnToInt(e.Button)); });
     }
 
     void Pb_MouseWheel(object sender, MouseEventArgs e)
     {
-        if (!controlOn || ctrlStream == null) return;
-        try { var bw = new BinaryWriter(ctrlStream); bw.Write((byte)4); bw.Write(e.Delta); bw.Flush(); }
-        catch { }
+        if (!controlOn || ctrlWriter == null) return;
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)4); bw.Write(e.Delta); });
     }
 
     void Form_KeyDown(object sender, KeyEventArgs e)
     {
-        if (!controlOn || ctrlStream == null) return;
-        try { var bw = new BinaryWriter(ctrlStream); bw.Write((byte)5); bw.Write((int)e.KeyCode); bw.Flush(); e.Handled = true; }
-        catch { }
+        if (!controlOn || ctrlWriter == null) return;
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)5); bw.Write((int)e.KeyCode); });
+        e.Handled = true;
     }
 
     void Form_KeyUp(object sender, KeyEventArgs e)
     {
-        if (!controlOn || ctrlStream == null) return;
-        try { var bw = new BinaryWriter(ctrlStream); bw.Write((byte)6); bw.Write((int)e.KeyCode); bw.Flush(); e.Handled = true; }
+        if (!controlOn || ctrlWriter == null) return;
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)6); bw.Write((int)e.KeyCode); });
+        e.Handled = true;
+    }
+
+    void SendControl(Action<BinaryWriter> write)
+    {
+        try
+        {
+            write(ctrlWriter);
+            ctrlWriter.Flush();
+        }
         catch { }
     }
 
