@@ -34,6 +34,8 @@ class ServerForm : Form
     TcpClient ctrlClient;
     NetworkStream ctrlStream;
     Thread ctrlWorker;
+    volatile bool allowControl = false;
+    volatile bool drawCursor = true;
 
     Bitmap prevBmp = null;
     int keyframeCounter = 0;
@@ -59,9 +61,11 @@ class ServerForm : Form
 
         chkAllowControl = new CheckBox(); chkAllowControl.Left = 220; chkAllowControl.Top = 18; chkAllowControl.Width = 200; chkAllowControl.Text = "Allow Remote Control";
         chkAllowControl.Checked = false;
+        chkAllowControl.CheckedChanged += delegate { allowControl = chkAllowControl.Checked; };
 
         chkDrawCursor = new CheckBox(); chkDrawCursor.Left = 220; chkDrawCursor.Top = 42; chkDrawCursor.Width = 200; chkDrawCursor.Text = "Draw Cursor";
         chkDrawCursor.Checked = true;
+        chkDrawCursor.CheckedChanged += delegate { drawCursor = chkDrawCursor.Checked; };
 
         btnStart = new Button(); btnStart.Left = 12; btnStart.Top = 72; btnStart.Width = 480; btnStart.Height = 32; btnStart.Text = "Start Server";
         btnStart.FlatStyle = FlatStyle.Flat; btnStart.FlatAppearance.BorderSize = 0; btnStart.BackColor = Color.FromArgb(33, 150, 243); btnStart.ForeColor = Color.White;
@@ -77,6 +81,9 @@ class ServerForm : Form
         this.Controls.Add(btnStart); this.Controls.Add(lblStatus);
 
         this.FormClosing += new FormClosingEventHandler(ServerForm_FormClosing);
+
+        allowControl = chkAllowControl.Checked;
+        drawCursor = chkDrawCursor.Checked;
     }
 
     void ServerForm_FormClosing(object sender, FormClosingEventArgs e) { StopServer(); }
@@ -289,7 +296,7 @@ class ServerForm : Form
             try
             {
                 byte type = br.ReadByte();
-                if (!chkAllowControl.Checked) { SkipPayload(br, type); continue; }
+                if (!allowControl) { SkipPayload(br, type); continue; }
 
                 if (type == 1) // move (video koord)
                 {
@@ -361,7 +368,7 @@ class ServerForm : Form
         using (Graphics g = Graphics.FromImage(full))
         {
             g.CopyFromScreen(Point.Empty, Point.Empty, full.Size);
-            if (chkDrawCursor.Checked) DrawCursor(g);
+            if (drawCursor) DrawCursor(g);
         }
 
         Bitmap bmp = new Bitmap(tW, tH, PixelFormat.Format24bppRgb);

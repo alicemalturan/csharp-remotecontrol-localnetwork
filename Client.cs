@@ -270,15 +270,18 @@ class ClientForm : Form
         try { if (stream != null) stream.Close(); } catch { }
         try { if (client != null) client.Close(); } catch { }
         try { if (worker != null) worker.Join(200); } catch { }
-        btnConnect.Text = "Connect";
-        lblInfo.Text = "Durum: Bağlı değil";
+        SafeUI(delegate
+        {
+            btnConnect.Text = "Connect";
+            lblInfo.Text = "Durum: Bağlı değil";
+        });
         statsBytes = 0; statsFrames = 0; statsWindowStart = DateTime.UtcNow;
-        lblMetrics.Text = "FPS: 0 | Ağ: 0 KB/s | Görünüm: " + (fillMode ? "FILL" : "FIT");
+        SafeUI(delegate { lblMetrics.Text = "FPS: 0 | Ağ: 0 KB/s | Görünüm: " + (fillMode ? "FILL" : "FIT"); });
         lock (bmpLock)
         {
             if (currentBmp != null) { currentBmp.Dispose(); currentBmp = null; }
             if (backBuffer != null) { backBuffer.Dispose(); backBuffer = null; }
-            pb.Image = null;
+            SafeUI(delegate { pb.Image = null; });
             serverWidth = serverHeight = 0;
         }
     }
@@ -336,7 +339,7 @@ class ClientForm : Form
     void StopControl()
     {
         controlOn = false;
-        btnControl.Text = "Control: OFF";
+        SafeUI(delegate { btnControl.Text = "Control: OFF"; });
         try { if (ctrlWriter != null) ctrlWriter.Close(); } catch { }
         try { if (ctrlStream != null) ctrlStream.Close(); } catch { }
         try { if (ctrlClient != null) ctrlClient.Close(); } catch { }
@@ -470,8 +473,18 @@ class ClientForm : Form
         statsBytes = 0;
         statsWindowStart = now;
 
-        if (lblMetrics.IsHandleCreated)
-            lblMetrics.BeginInvoke(new Action(delegate { lblMetrics.Text = text; }));
+        SafeUI(delegate { lblMetrics.Text = text; });
+    }
+
+    void SafeUI(Action a)
+    {
+        if (!this.IsHandleCreated) return;
+        try
+        {
+            if (this.InvokeRequired) this.BeginInvoke(a);
+            else a();
+        }
+        catch { }
     }
 
     void ApplyButtonStyle(Button b, Color color)
