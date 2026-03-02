@@ -9,8 +9,11 @@ C# .NET 4.x WinForms tabanlı, yüksek performanslı istemci-sunucu mimarisiyle 
 - **60 FPS JPEG Delta yayını:** Server ekranını 60 FPS hızında sıkıştırılmış karelerle gönderir.
 - **Düşük gecikme (Low-Latency):** `TcpClient.NoDelay` ve optimize edilmiş buffer yönetimi.
 - **Responsive Client UI:** Dinamik panel boyutları, DPI uyumlu ve çift tamponlu (DoubleBuffer) arayüz.
+- **Canlı modern arayüz:** Renkli kontrol paneli, canlı durum metrikleri (FPS / KB/s), TopMost ve görüntü modu geçişi.
 - **Delta Frame sistemi:** Sunucu sadece değişen ekran bloklarını yollar.
+- **Snapshot özelliği:** Client üzerinden anlık görüntüyü masaüstüne PNG olarak kaydetme.
 - **Tam kontrol:** Mouse ve klavye olaylarını istemciden sunucuya gerçek zamanlı gönderir.
+- **Sunucu ekran imleci ayarı:** İmleç çizimini server tarafında aç/kapat.
 - **LAN taraması (/24):** Ağınızdaki aktif server cihazlarını otomatik olarak listeler.
 - **OOM (Out Of Memory) koruması:** Bellek taşmalarına karşı güvenli görüntü oluşturma.
 - **Hata günlüğü:** Tüm hatalar `%TEMP%/Client_err.txt` dosyasında tutulur.
@@ -80,4 +83,3 @@ Serbestçe değiştirilebilir, dağıtılabilir ve ticari olarak kullanılabilir
 **Yazar:** ali  
 **Proje:** LanStreamControl-WinForms-60FPS  
 **Sürüm:** v1.0.0
-

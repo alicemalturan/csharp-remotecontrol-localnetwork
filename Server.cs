@@ -20,7 +20,8 @@ class ServerForm : Form
     TextBox txtPort;
     Button btnStart;
     CheckBox chkAllowControl;
-    Label lblStatus;
+    CheckBox chkDrawCursor;
+    Label lblStatus, lblIps;
 
     TcpListener listener;
     TcpClient client;
@@ -36,6 +37,7 @@ class ServerForm : Form
 
     Bitmap prevBmp = null;
     int keyframeCounter = 0;
+    readonly ImageCodecInfo jpegEncoder;
 
     // Ekran boyutu ve hedef boyut
     int fullW = 0, fullH = 0;
@@ -44,8 +46,11 @@ class ServerForm : Form
 
     public ServerForm()
     {
+        jpegEncoder = GetJpegEncoder();
+
         this.Text = "Screen Server (60 FPS • Delta • Control)";
         this.Width = 520; this.Height = 220;
+        this.BackColor = Color.FromArgb(245, 248, 252);
         this.FormBorderStyle = FormBorderStyle.FixedDialog;
         this.MaximizeBox = false;
 
@@ -55,13 +60,20 @@ class ServerForm : Form
         chkAllowControl = new CheckBox(); chkAllowControl.Left = 220; chkAllowControl.Top = 18; chkAllowControl.Width = 200; chkAllowControl.Text = "Allow Remote Control";
         chkAllowControl.Checked = false;
 
-        btnStart = new Button(); btnStart.Left = 12; btnStart.Top = 52; btnStart.Width = 480; btnStart.Height = 32; btnStart.Text = "Start Server";
+        chkDrawCursor = new CheckBox(); chkDrawCursor.Left = 220; chkDrawCursor.Top = 42; chkDrawCursor.Width = 200; chkDrawCursor.Text = "Draw Cursor";
+        chkDrawCursor.Checked = true;
+
+        btnStart = new Button(); btnStart.Left = 12; btnStart.Top = 72; btnStart.Width = 480; btnStart.Height = 32; btnStart.Text = "Start Server";
+        btnStart.FlatStyle = FlatStyle.Flat; btnStart.FlatAppearance.BorderSize = 0; btnStart.BackColor = Color.FromArgb(33, 150, 243); btnStart.ForeColor = Color.White;
         btnStart.Click += new EventHandler(BtnStart_Click);
 
-        lblStatus = new Label(); lblStatus.Left = 12; lblStatus.Top = 96; lblStatus.Width = 480; lblStatus.Height = 70; lblStatus.Text = "Durum: Beklemede";
+        lblIps = new Label(); lblIps.Left = 12; lblIps.Top = 48; lblIps.Width = 200; lblIps.Height = 20; lblIps.Text = "IP: " + GetLocalIPv4();
+        lblStatus = new Label(); lblStatus.Left = 12; lblStatus.Top = 112; lblStatus.Width = 480; lblStatus.Height = 70; lblStatus.Text = "Durum: Beklemede";
 
         this.Controls.Add(lblP); this.Controls.Add(txtPort);
         this.Controls.Add(chkAllowControl);
+        this.Controls.Add(chkDrawCursor);
+        this.Controls.Add(lblIps);
         this.Controls.Add(btnStart); this.Controls.Add(lblStatus);
 
         this.FormClosing += new FormClosingEventHandler(ServerForm_FormClosing);
@@ -217,13 +229,9 @@ class ServerForm : Form
                     { payload = EncodeJpeg(currentFull, jpegQuality); isFull = true; }
                     else
                     {
-                        using (Bitmap prevScaled = (Bitmap)prevBmp.Clone())
-                        using (Bitmap currScaled = (Bitmap)currentFull.Clone())
-                        {
-                            byte[] diff = GetDiffBytes(prevScaled, currScaled);
-                            if (diff.Length > 0 && diff.Length < 250000) { payload = diff; isFull = false; }
-                            else { payload = EncodeJpeg(currentFull, jpegQuality); isFull = true; }
-                        }
+                        byte[] diff = GetDiffBytes(prevBmp, currentFull);
+                        if (diff.Length > 0 && diff.Length < 250000) { payload = diff; isFull = false; }
+                        else { payload = EncodeJpeg(currentFull, jpegQuality); isFull = true; }
                     }
 
                     // İmleç: fiziksel → video uzayı
@@ -351,7 +359,10 @@ class ServerForm : Form
         Rectangle bounds = Screen.PrimaryScreen.Bounds;
         Bitmap full = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
         using (Graphics g = Graphics.FromImage(full))
-        { g.CopyFromScreen(Point.Empty, Point.Empty, full.Size); DrawCursor(g); }
+        {
+            g.CopyFromScreen(Point.Empty, Point.Empty, full.Size);
+            if (chkDrawCursor.Checked) DrawCursor(g);
+        }
 
         Bitmap bmp = new Bitmap(tW, tH, PixelFormat.Format24bppRgb);
         using (Graphics g2 = Graphics.FromImage(bmp))
@@ -380,10 +391,13 @@ class ServerForm : Form
     {
         using (MemoryStream ms = new MemoryStream())
         {
-            ImageCodecInfo enc = GetJpegEncoder();
-            EncoderParameters ep = new EncoderParameters(1);
-            ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
-            bmp.Save(ms, enc, ep);
+            if (jpegEncoder == null) bmp.Save(ms, ImageFormat.Jpeg);
+            else
+            {
+                EncoderParameters ep = new EncoderParameters(1);
+                ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+                bmp.Save(ms, jpegEncoder, ep);
+            }
             return ms.ToArray();
         }
     }
@@ -403,28 +417,34 @@ class ServerForm : Form
         using (BinaryWriter bw = new BinaryWriter(ms))
         {
             bool any = false;
-            int y = 0;
-            while (y < curr.Height)
+            Rectangle fullRect = new Rectangle(0, 0, curr.Width, curr.Height);
+            BitmapData d1 = prev.LockBits(fullRect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            BitmapData d2 = curr.LockBits(fullRect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+            try
             {
-                int x = 0;
-                while (x < curr.Width)
+                int y = 0;
+                while (y < curr.Height)
                 {
-                    Rectangle rect = new Rectangle(x, y,
-                        Math.Min(block, curr.Width - x),
-                        Math.Min(block, curr.Height - y));
-
-                    using (Bitmap b1 = prev.Clone(rect, PixelFormat.Format24bppRgb))
-                    using (Bitmap b2 = curr.Clone(rect, PixelFormat.Format24bppRgb))
+                    int x = 0;
+                    while (x < curr.Width)
                     {
-                        if (!AreBlocksEqual(b1, b2))
+                        Rectangle rect = new Rectangle(x, y,
+                            Math.Min(block, curr.Width - x),
+                            Math.Min(block, curr.Height - y));
+
+                        if (!AreBlocksEqual(d1, d2, rect))
                         {
                             any = true;
+                            using (Bitmap blockBmp = curr.Clone(rect, PixelFormat.Format24bppRgb))
                             using (MemoryStream bs = new MemoryStream())
                             {
-                                ImageCodecInfo enc = GetJpegEncoder();
-                                EncoderParameters ep = new EncoderParameters(1);
-                                ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 60L);
-                                b2.Save(bs, enc, ep);
+                                if (jpegEncoder == null) blockBmp.Save(bs, ImageFormat.Jpeg);
+                                else
+                                {
+                                    EncoderParameters ep = new EncoderParameters(1);
+                                    ep.Param[0] = new EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 60L);
+                                    blockBmp.Save(bs, jpegEncoder, ep);
+                                }
                                 byte[] data = bs.ToArray();
 
                                 bw.Write((short)rect.X);
@@ -435,37 +455,35 @@ class ServerForm : Form
                                 bw.Write(data);
                             }
                         }
+                        }
+                        x += block;
                     }
-                    x += block;
+                    y += block;
                 }
-                y += block;
             }
+            finally { prev.UnlockBits(d1); curr.UnlockBits(d2); }
             if (any) return ms.ToArray();
             return new byte[0];
         }
     }
 
-    bool AreBlocksEqual(Bitmap a, Bitmap b)
+    unsafe bool AreBlocksEqual(BitmapData d1, BitmapData d2, Rectangle rect)
     {
-        if (a.Width != b.Width || a.Height != b.Height) return false;
-        Rectangle rect = new Rectangle(0, 0, a.Width, a.Height);
-        BitmapData d1 = a.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-        BitmapData d2 = b.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-        try
+        int y = 0;
+        while (y < rect.Height)
         {
-            int rowBytes = a.Width * 3, y = 0;
-            unsafe
+            byte* row1 = (byte*)d1.Scan0 + ((rect.Y + y) * d1.Stride) + (rect.X * 3);
+            byte* row2 = (byte*)d2.Scan0 + ((rect.Y + y) * d2.Stride) + (rect.X * 3);
+            int x = 0;
+            int rowBytes = rect.Width * 3;
+            while (x < rowBytes)
             {
-                byte* p1 = (byte*)d1.Scan0; byte* p2 = (byte*)d2.Scan0;
-                while (y < a.Height)
-                {
-                    int x = 0; while (x < rowBytes) { if (p1[x] != p2[x]) return false; x++; }
-                    p1 += d1.Stride; p2 += d2.Stride; y++;
-                }
+                if (row1[x] != row2[x]) return false;
+                x++;
             }
-            return true;
+            y++;
         }
-        finally { a.UnlockBits(d1); b.UnlockBits(d2); }
+        return true;
     }
 
     // Win32 / Input
@@ -479,6 +497,21 @@ class ServerForm : Form
     [DllImport("user32.dll")] static extern bool SetCursorPos(int X, int Y);
     [DllImport("user32.dll")] static extern void mouse_event(uint dwFlags, uint dx, uint dy, int dwData, uint dwExtraInfo);
     [DllImport("user32.dll")] static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    string GetLocalIPv4()
+    {
+        try
+        {
+            IPHostEntry he = Dns.GetHostEntry(Dns.GetHostName());
+            for (int i = 0; i < he.AddressList.Length; i++)
+            {
+                IPAddress ip = he.AddressList[i];
+                if (ip.AddressFamily == AddressFamily.InterNetwork) return ip.ToString();
+            }
+        }
+        catch { }
+        return "bulunamadı";
+    }
 
     [STAThread]
     static void Main() { Application.EnableVisualStyles(); Application.Run(new ServerForm()); }
