@@ -7,15 +7,18 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows.Forms;
 
 class ClientForm : Form
 {
     // Top bar
     TextBox txtIp, txtPort;
-    Button btnConnect, btnControl, btnScan, btnSnapshot, btnViewMode;
-    CheckBox chkTopMost;
+    Button btnConnect, btnControl, btnScan, btnSnapshot, btnViewMode, btnFavSave, btnSendFile, btnSendClip, btnGetClip, btnCmd;
+    CheckBox chkTopMost, chkAutoReconnect;
     Label lblInfo, lblMetrics;
+    TextBox txtPin;
 
     // Layout
     TableLayoutPanel layout;
@@ -33,7 +36,13 @@ class ClientForm : Form
     TcpClient ctrlClient;
     NetworkStream ctrlStream;
     BinaryWriter ctrlWriter;
+    BinaryReader ctrlReader;
+    Thread ctrlRxWorker;
     volatile bool controlOn = false;
+    byte[] sessionKey = null;
+    System.Windows.Forms.Timer pingTimer;
+    long lastPingMs = 0;
+    double jitter = 0;
 
     // Video buffers
     Bitmap currentBmp = null;
@@ -49,6 +58,9 @@ class ClientForm : Form
     long statsBytes = 0;
     int statsFrames = 0;
     DateTime statsWindowStart = DateTime.UtcNow;
+    string favPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "LanStreamControl", "favorites.txt");
+    string lastIp = "";
+    int lastPort = 5000;
 
     // Split yönetimi
     bool splitterReady = false;   // ilk güvenli ayar yapıldı mı
@@ -69,20 +81,28 @@ class ClientForm : Form
         Label lblI = new Label { Left = 8, Top = 9, Width = 70, Text = "Server IP:" };
         txtIp = new TextBox { Left = 78, Top = 6, Width = 160, Text = "192.168.1.10" };
         Label lblP = new Label { Left = 244, Top = 9, Width = 40, Text = "Port:" };
-        txtPort = new TextBox { Left = 284, Top = 6, Width = 60, Text = "5000" };
+        txtPort = new TextBox { Left = 284, Top = 6, Width = 55, Text = "5000" };
+        Label lblPin = new Label { Left = 342, Top = 9, Width = 30, Text = "PIN:" };
+        txtPin = new TextBox { Left = 372, Top = 6, Width = 70, Text = "" };
 
-        btnConnect = new Button { Left = 350, Top = 4, Width = 100, Height = 28, Text = "Connect" };
-        btnControl = new Button { Left = 456, Top = 4, Width = 110, Height = 28, Text = "Control: OFF" };
-        btnScan    = new Button { Left = 572, Top = 4, Width = 90, Height = 28, Text = "Scan /24" };
-        btnSnapshot= new Button { Left = 666, Top = 4, Width = 95, Height = 28, Text = "Snapshot" };
-        btnViewMode= new Button { Left = 766, Top = 4, Width = 100, Height = 28, Text = "View: FIT" };
-        chkTopMost = new CheckBox { Left = 872, Top = 9, Width = 82, Text = "TopMost" };
-        lblInfo    = new Label  { Left = 960, Top = 9, Width = 500, Height = 20, Text = "Durum: Bağlı değil" };
+        btnConnect = new Button { Left = 446, Top = 4, Width = 90, Height = 28, Text = "Connect" };
+        btnControl = new Button { Left = 540, Top = 4, Width = 100, Height = 28, Text = "Control: OFF" };
+        btnScan    = new Button { Left = 644, Top = 4, Width = 80, Height = 28, Text = "Scan /24" };
+        btnSnapshot= new Button { Left = 728, Top = 4, Width = 80, Height = 28, Text = "Snapshot" };
+        btnViewMode= new Button { Left = 812, Top = 4, Width = 80, Height = 28, Text = "View" };
+        btnFavSave = new Button { Left = 896, Top = 4, Width = 60, Height = 28, Text = "Fav" };
+        btnSendFile= new Button { Left = 960, Top = 4, Width = 60, Height = 28, Text = "File" };
+        btnSendClip= new Button { Left = 1024, Top = 4, Width = 60, Height = 28, Text = "Clip↑" };
+        btnGetClip = new Button { Left = 1088, Top = 4, Width = 60, Height = 28, Text = "Clip↓" };
+        btnCmd = new Button { Left = 1152, Top = 4, Width = 52, Height = 28, Text = "Cmd" };
+        chkTopMost = new CheckBox { Left = 1208, Top = 2, Width = 82, Text = "TopMost" };
+        chkAutoReconnect = new CheckBox { Left = 1208, Top = 18, Width = 120, Text = "AutoReconn" };
+        lblInfo    = new Label  { Left = 1332, Top = 9, Width = 360, Height = 20, Text = "Durum: Bağlı değil" };
 
         top.Controls.Add(lblI); top.Controls.Add(txtIp);
-        top.Controls.Add(lblP); top.Controls.Add(txtPort);
+        top.Controls.Add(lblP); top.Controls.Add(txtPort); top.Controls.Add(lblPin); top.Controls.Add(txtPin);
         top.Controls.Add(btnConnect); top.Controls.Add(btnControl); top.Controls.Add(btnScan);
-        top.Controls.Add(btnSnapshot); top.Controls.Add(btnViewMode); top.Controls.Add(chkTopMost);
+        top.Controls.Add(btnSnapshot); top.Controls.Add(btnViewMode); top.Controls.Add(btnFavSave); top.Controls.Add(btnSendFile); top.Controls.Add(btnSendClip); top.Controls.Add(btnGetClip); top.Controls.Add(btnCmd); top.Controls.Add(chkTopMost); top.Controls.Add(chkAutoReconnect);
         top.Controls.Add(lblInfo);
 
         // ---- SPLIT (min değerleri ŞİMDİ ayarlamıyoruz!) ----
@@ -108,6 +128,10 @@ class ClientForm : Form
         layout.Controls.Add(top, 0, 0);
         layout.Controls.Add(split, 0, 1);
         this.Controls.Add(layout);
+        LoadFavorites();
+        pingTimer = new System.Windows.Forms.Timer();
+        pingTimer.Interval = 1000;
+        pingTimer.Tick += (s2,e2)=>SendPing();
 
         // ---- Eventler ----
         lstServers.DoubleClick += LstServers_DoubleClick;
@@ -116,6 +140,11 @@ class ClientForm : Form
         btnScan.Click    += BtnScan_Click;
         btnSnapshot.Click+= BtnSnapshot_Click;
         btnViewMode.Click+= BtnViewMode_Click;
+        btnFavSave.Click += (s,e)=>SaveFavorite(txtIp.Text.Trim(), txtPort.Text.Trim());
+        btnSendFile.Click += BtnSendFile_Click;
+        btnSendClip.Click += (s,e)=>SendClipboardText();
+        btnGetClip.Click += (s,e)=>RequestClipboardText();
+        btnCmd.Click += (s,e)=>SendRemoteCommand("notepad");
         chkTopMost.CheckedChanged += (s, e) => this.TopMost = chkTopMost.Checked;
 
         pb.MouseMove += Pb_MouseMove;
@@ -125,6 +154,7 @@ class ClientForm : Form
 
         this.KeyDown += Form_KeyDown;
         this.KeyUp   += Form_KeyUp;
+        this.KeyDown += (s,e)=>{ if (e.Control && e.Alt && e.KeyCode==Keys.F){ this.FormBorderStyle = this.FormBorderStyle==FormBorderStyle.None?FormBorderStyle.Sizable:FormBorderStyle.None; this.WindowState = this.WindowState==FormWindowState.Maximized?FormWindowState.Normal:FormWindowState.Maximized; } };
 
         this.FormClosing += ClientForm_FormClosing;
 
@@ -133,6 +163,7 @@ class ClientForm : Form
         ApplyButtonStyle(btnScan, Color.FromArgb(0, 150, 136));
         ApplyButtonStyle(btnSnapshot, Color.FromArgb(255, 152, 0));
         ApplyButtonStyle(btnViewMode, Color.FromArgb(96, 125, 139));
+        ApplyButtonStyle(btnCmd, Color.FromArgb(121, 85, 72));
 
         // ---- SplitterDistance güvenli ayarlama kancaları ----
         split.HandleCreated += (s, e) => InitSplitterSafe();
@@ -245,7 +276,9 @@ class ClientForm : Form
             client = new TcpClient { NoDelay = true, SendBufferSize = 1 << 20, ReceiveBufferSize = 1 << 20 };
             client.Connect(ip, port);
             stream = client.GetStream();
+            if (!SendAuth(stream, txtPin.Text.Trim())) throw new Exception("PIN doğrulama başarısız");
             running = true;
+            lastIp = ip; lastPort = port;
             btnConnect.Text = "Disconnect";
 
             string ep = "";
@@ -265,6 +298,7 @@ class ClientForm : Form
 
     void Disconnect()
     {
+        pingTimer.Stop();
         StopControl();
         running = false;
         try { if (stream != null) stream.Close(); } catch { }
@@ -325,14 +359,19 @@ class ClientForm : Form
             ctrlClient.Connect(ip, port + 1);
             ctrlStream = ctrlClient.GetStream();
             ctrlWriter = new BinaryWriter(ctrlStream);
+            ctrlReader = new BinaryReader(ctrlStream);
+            if (!SendAuth(ctrlStream, txtPin.Text.Trim())) throw new Exception("Control PIN doğrulama başarısız");
+            sessionKey = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(txtPin.Text.Trim()));
             controlOn = true;
+            pingTimer.Start();
             btnControl.Text = "Control: ON";
             lblInfo.Text = "Durum: Video + Control bağlı";
         }
         catch (Exception ex)
         {
             MessageBox.Show("Control bağlantısı başarısız: " + ex.Message);
-            StopControl();
+            pingTimer.Stop();
+        StopControl();
         }
     }
 
@@ -343,7 +382,8 @@ class ClientForm : Form
         try { if (ctrlWriter != null) ctrlWriter.Close(); } catch { }
         try { if (ctrlStream != null) ctrlStream.Close(); } catch { }
         try { if (ctrlClient != null) ctrlClient.Close(); } catch { }
-        ctrlWriter = null;
+        try { if (ctrlRxWorker != null) ctrlRxWorker.Join(200); } catch { }
+        ctrlWriter = null; ctrlReader = null; sessionKey = null;
         ctrlStream = null; ctrlClient = null;
     }
 
@@ -457,7 +497,55 @@ class ClientForm : Form
             catch { break; }
         }
 
+        bool wantReconnect = chkAutoReconnect != null && chkAutoReconnect.Checked;
         Disconnect();
+        if (wantReconnect && !string.IsNullOrWhiteSpace(lastIp))
+        {
+            Thread.Sleep(1000);
+            SafeUI(delegate { txtIp.Text = lastIp; txtPort.Text = lastPort.ToString(); });
+            try { Connect(); } catch { }
+        }
+    }
+
+    void ControlReceiveLoop()
+    {
+        while (controlOn && ctrlClient != null && ctrlClient.Connected)
+        {
+            try
+            {
+                int len = ctrlReader.ReadInt32();
+                byte[] payload = ctrlReader.ReadBytes(len);
+                int slen = ctrlReader.ReadInt32();
+                byte[] sig = ctrlReader.ReadBytes(slen);
+                using (HMACSHA256 h = new HMACSHA256(sessionKey))
+                {
+                    byte[] calc = h.ComputeHash(payload);
+                    if (calc.Length != sig.Length) continue;
+                    bool ok = true;
+                    for (int i = 0; i < calc.Length; i++) if (calc[i] != sig[i]) { ok = false; break; }
+                    if (!ok) continue;
+                }
+                using (MemoryStream ms = new MemoryStream(payload))
+                using (BinaryReader br = new BinaryReader(ms))
+                {
+                    byte type = br.ReadByte();
+                    if (type == 10)
+                    {
+                        long sent = br.ReadInt64();
+                        double rtt = (DateTime.UtcNow.Ticks - sent) / (double)TimeSpan.TicksPerMillisecond;
+                        if (lastPingMs == 0) lastPingMs = (long)rtt;
+                        jitter = jitter * 0.8 + Math.Abs(rtt - lastPingMs) * 0.2;
+                        lastPingMs = (long)rtt;
+                    }
+                    else if (type == 32)
+                    {
+                        string txt = br.ReadString();
+                        try { Clipboard.SetText(txt); } catch { }
+                    }
+                }
+            }
+            catch { break; }
+        }
     }
 
     void UpdateStatsIfNeeded()
@@ -468,7 +556,7 @@ class ClientForm : Form
 
         int fps = (int)(statsFrames / sec);
         double kbps = (statsBytes / 1024.0) / sec;
-        string text = "FPS: " + fps + " | Ağ: " + kbps.ToString("0") + " KB/s | Görünüm: " + (fillMode ? "FILL" : "FIT");
+        string text = "FPS: " + fps + " | Ağ: " + kbps.ToString("0") + " KB/s | RTT: " + lastPingMs + " ms | Jit: " + jitter.ToString("0.0") + " | Görünüm: " + (fillMode ? "FILL" : "FIT");
         statsFrames = 0;
         statsBytes = 0;
         statsWindowStart = now;
@@ -540,8 +628,20 @@ class ClientForm : Form
     {
         try
         {
-            write(ctrlWriter);
-            ctrlWriter.Flush();
+            if (ctrlWriter == null || sessionKey == null) return;
+            using (MemoryStream ms = new MemoryStream())
+            using (BinaryWriter bw = new BinaryWriter(ms))
+            {
+                write(bw);
+                byte[] payload = ms.ToArray();
+                byte[] sig;
+                using (HMACSHA256 h = new HMACSHA256(sessionKey)) sig = h.ComputeHash(payload);
+                ctrlWriter.Write(payload.Length);
+                ctrlWriter.Write(payload);
+                ctrlWriter.Write(sig.Length);
+                ctrlWriter.Write(sig);
+                ctrlWriter.Flush();
+            }
         }
         catch { }
     }
@@ -663,6 +763,87 @@ class ClientForm : Form
     {
         if (lstServers.IsHandleCreated)
             lstServers.BeginInvoke(new Action(delegate { lstServers.Items.Add(s); }));
+    }
+
+
+    void BtnSendFile_Click(object sender, EventArgs e)
+    {
+        if (!controlOn) return;
+        OpenFileDialog ofd = new OpenFileDialog();
+        if (ofd.ShowDialog() != DialogResult.OK) return;
+        byte[] data = File.ReadAllBytes(ofd.FileName);
+        if (data.Length > 1024 * 1024) { MessageBox.Show("Dosya 1MB'den küçük olmalı"); return; }
+        string name = Path.GetFileName(ofd.FileName);
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)20); bw.Write(name); bw.Write(data.Length); bw.Write(data); });
+    }
+
+    void SendClipboardText()
+    {
+        if (!controlOn) return;
+        string txt = "";
+        try { txt = Clipboard.GetText(); } catch { }
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)30); bw.Write(txt ?? ""); });
+    }
+
+    void RequestClipboardText()
+    {
+        if (!controlOn) return;
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)31); });
+    }
+
+    void SendPing()
+    {
+        if (!controlOn) return;
+        long now = DateTime.UtcNow.Ticks;
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)9); bw.Write(now); });
+    }
+
+
+    void SendRemoteCommand(string cmd)
+    {
+        if (!controlOn) return;
+        SendControl(delegate(BinaryWriter bw) { bw.Write((byte)40); bw.Write(cmd); });
+    }
+
+    bool SendAuth(NetworkStream ns, string pin)
+    {
+        try
+        {
+            BinaryWriter bw = new BinaryWriter(ns, Encoding.UTF8, true);
+            BinaryReader br = new BinaryReader(ns, Encoding.UTF8, true);
+            bw.Write(0x50494E31);
+            bw.Write(pin ?? "");
+            bw.Flush();
+            return br.ReadBoolean();
+        }
+        catch { return false; }
+    }
+
+    void SaveFavorite(string ip, string port)
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(favPath);
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            string line = ip + ":" + port;
+            var list = new System.Collections.Generic.List<string>();
+            if (File.Exists(favPath)) list.AddRange(File.ReadAllLines(favPath));
+            if (!list.Contains(line)) list.Add(line);
+            File.WriteAllLines(favPath, list.ToArray());
+            LoadFavorites();
+        }
+        catch { }
+    }
+
+    void LoadFavorites()
+    {
+        try
+        {
+            if (!File.Exists(favPath)) return;
+            foreach (var l in File.ReadAllLines(favPath))
+                if (!string.IsNullOrWhiteSpace(l) && !lstServers.Items.Contains(l)) lstServers.Items.Add(l);
+        }
+        catch { }
     }
 
     // --- helpers ---
