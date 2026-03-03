@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Advanced 3D Viewer</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script async src="https://unpkg.com/es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.164.1/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="loadingOverlay">
+    <img id="poster" alt="poster" src="https://images.unsplash.com/photo-1618005198919-d3d4b5a92eee?w=800" />
+    <div id="loadingText">Model yükleniyor... %0</div>
+  </div>
+
+  <aside id="panel">
+    <h2>Advanced 3D Viewer</h2>
+
+    <section>
+      <label>Model URL</label>
+      <input id="modelUrl" value="https://modelviewer.dev/shared-assets/models/Astronaut.glb" />
+      <div class="row">
+        <button id="btnLoadUrl">URL Yükle</button>
+        <input id="fileInput" type="file" accept=".glb,.gltf,.obj,.stl" />
+      </div>
+    </section>
+
+    <section>
+      <label>Kamera</label>
+      <div class="row wrap">
+        <button data-view="front">Ön</button><button data-view="back">Arka</button>
+        <button data-view="left">Sol</button><button data-view="right">Sağ</button>
+        <button data-view="top">Üst</button><button id="toggleAutoRotate">Auto Rotate</button>
+      </div>
+    </section>
+
+    <section>
+      <label>Işık / PBR</label>
+      <div class="row"><span>Ambient</span><input id="ambientIntensity" type="range" min="0" max="3" step="0.1" value="1" /></div>
+      <div class="row"><span>Shadow</span><input id="shadowIntensity" type="range" min="0" max="1" step="0.05" value="0.5" /></div>
+      <select id="envPreset">
+        <option value="studio">Studio HDR</option>
+        <option value="city">City HDR</option>
+        <option value="sunset">Sunset HDR</option>
+      </select>
+      <button id="applyPbrVariant">Renk Varyantı Değiştir</button>
+    </section>
+
+    <section>
+      <label>Ölçüm / Kesit</label>
+      <button id="toggleMeasure">Ölçüm Modu</button>
+      <div id="measureResult">Mesafe: -</div>
+      <div class="row"><span>Section</span><input id="sectionSlider" type="range" min="-2" max="2" step="0.01" value="0" /></div>
+      <button id="toggleSection">Section Plane Aç/Kapat</button>
+    </section>
+
+    <section>
+      <label>Animasyon / Hotspot / AR</label>
+      <div class="row wrap">
+        <button id="animPlay">Play</button><button id="animPause">Pause</button><button id="animFaster">x2</button>
+      </div>
+      <button id="addHotspot">Hotspot Ekle (tıklama)</button>
+      <button id="arButton">AR (WebXR)</button>
+      <a id="sceneViewerLink" href="#" target="_blank">Scene Viewer (Android)</a>
+    </section>
+
+    <small>Draco/Meshopt destekli glTF yükleme açıktır.</small>
+  </aside>
+
+  <main id="viewport"></main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

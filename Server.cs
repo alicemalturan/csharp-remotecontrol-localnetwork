@@ -13,6 +13,9 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Security.Cryptography;
+using System.Text;
+using System.Diagnostics;
 using System.Windows.Forms;
 
 class ServerForm : Form
@@ -22,6 +25,9 @@ class ServerForm : Form
     CheckBox chkAllowControl;
     CheckBox chkDrawCursor;
     Label lblStatus, lblIps;
+    ComboBox cmbProfile, cmbMonitors;
+    TextBox txtPin, txtAllow;
+    Button btnKick;
 
     TcpListener listener;
     TcpClient client;
@@ -36,6 +42,9 @@ class ServerForm : Form
     Thread ctrlWorker;
     volatile bool allowControl = false;
     volatile bool drawCursor = true;
+    string currentPin = "";
+    byte[] sessionKey = null;
+    System.Collections.Generic.HashSet<string> allowIps = new System.Collections.Generic.HashSet<string>();
 
     Bitmap prevBmp = null;
     int keyframeCounter = 0;
@@ -43,8 +52,10 @@ class ServerForm : Form
 
     // Ekran boyutu ve hedef boyut
     int fullW = 0, fullH = 0;
-    const int targetW = 1280;
-    const int targetH = 720;
+    int targetW = 1280;
+    int targetH = 720;
+    int targetFps = 60;
+    long jpegQuality = 60;
 
     public ServerForm()
     {
@@ -63,20 +74,38 @@ class ServerForm : Form
         chkAllowControl.Checked = false;
         chkAllowControl.CheckedChanged += delegate { allowControl = chkAllowControl.Checked; };
 
-        chkDrawCursor = new CheckBox(); chkDrawCursor.Left = 220; chkDrawCursor.Top = 42; chkDrawCursor.Width = 200; chkDrawCursor.Text = "Draw Cursor";
+        chkDrawCursor = new CheckBox(); chkDrawCursor.Left = 220; chkDrawCursor.Top = 42; chkDrawCursor.Width = 120; chkDrawCursor.Text = "Draw Cursor";
         chkDrawCursor.Checked = true;
         chkDrawCursor.CheckedChanged += delegate { drawCursor = chkDrawCursor.Checked; };
 
-        btnStart = new Button(); btnStart.Left = 12; btnStart.Top = 72; btnStart.Width = 480; btnStart.Height = 32; btnStart.Text = "Start Server";
+        cmbProfile = new ComboBox(); cmbProfile.Left = 350; cmbProfile.Top = 40; cmbProfile.Width = 140; cmbProfile.DropDownStyle = ComboBoxStyle.DropDownList;
+        cmbProfile.Items.AddRange(new object[]{"Ultra","Balanced","Low-latency"}); cmbProfile.SelectedIndex = 1;
+        cmbProfile.SelectedIndexChanged += delegate { ApplyProfile(); };
+
+        cmbMonitors = new ComboBox(); cmbMonitors.Left = 12; cmbMonitors.Top = 46; cmbMonitors.Width = 190; cmbMonitors.DropDownStyle = ComboBoxStyle.DropDownList;
+        for(int i=0;i<Screen.AllScreens.Length;i++) cmbMonitors.Items.Add("Monitor " + (i+1));
+        if (cmbMonitors.Items.Count>0) cmbMonitors.SelectedIndex = 0;
+
+        txtPin = new TextBox(); txtPin.Left = 12; txtPin.Top = 74; txtPin.Width = 80; txtPin.ReadOnly = true;
+        txtAllow = new TextBox(); txtAllow.Left = 98; txtAllow.Top = 74; txtAllow.Width = 190; txtAllow.Text = "192.168.1.0/24 veya IP";
+        btnKick = new Button(); btnKick.Left = 292; btnKick.Top = 72; btnKick.Width = 90; btnKick.Height = 26; btnKick.Text = "Disconnect";
+        btnKick.Click += delegate { KickClient(); };
+
+        btnStart = new Button(); btnStart.Left = 12; btnStart.Top = 102; btnStart.Width = 480; btnStart.Height = 32; btnStart.Text = "Start Server";
         btnStart.FlatStyle = FlatStyle.Flat; btnStart.FlatAppearance.BorderSize = 0; btnStart.BackColor = Color.FromArgb(33, 150, 243); btnStart.ForeColor = Color.White;
         btnStart.Click += new EventHandler(BtnStart_Click);
 
-        lblIps = new Label(); lblIps.Left = 12; lblIps.Top = 48; lblIps.Width = 200; lblIps.Height = 20; lblIps.Text = "IP: " + GetLocalIPv4();
-        lblStatus = new Label(); lblStatus.Left = 12; lblStatus.Top = 112; lblStatus.Width = 480; lblStatus.Height = 70; lblStatus.Text = "Durum: Beklemede";
+        lblIps = new Label(); lblIps.Left = 12; lblIps.Top = 20; lblIps.Width = 200; lblIps.Height = 20; lblIps.Text = "IP: " + GetLocalIPv4();
+        lblStatus = new Label(); lblStatus.Left = 12; lblStatus.Top = 140; lblStatus.Width = 480; lblStatus.Height = 70; lblStatus.Text = "Durum: Beklemede";
 
         this.Controls.Add(lblP); this.Controls.Add(txtPort);
         this.Controls.Add(chkAllowControl);
         this.Controls.Add(chkDrawCursor);
+        this.Controls.Add(cmbProfile);
+        this.Controls.Add(cmbMonitors);
+        this.Controls.Add(txtPin);
+        this.Controls.Add(txtAllow);
+        this.Controls.Add(btnKick);
         this.Controls.Add(lblIps);
         this.Controls.Add(btnStart); this.Controls.Add(lblStatus);
 
@@ -102,9 +131,16 @@ class ServerForm : Form
     {
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Screen sc = Screen.PrimaryScreen;
+        if (cmbMonitors != null && cmbMonitors.SelectedIndex >= 0 && cmbMonitors.SelectedIndex < Screen.AllScreens.Length) sc = Screen.AllScreens[cmbMonitors.SelectedIndex];
+        Rectangle bounds = sc.Bounds;
             fullW = bounds.Width; fullH = bounds.Height;
 
+            ApplyProfile();
+            currentPin = new Random().Next(100000,999999).ToString();
+            txtPin.Text = currentPin;
+            sessionKey = SHA256.Create().ComputeHash(Encoding.UTF8.GetBytes(currentPin));
+            ParseAllowList();
             listener = new TcpListener(IPAddress.Any, port);
             listener.Start();
 
@@ -160,8 +196,11 @@ class ServerForm : Form
                     try { if (stream != null) stream.Close(); } catch { }
                     try { client.Close(); } catch { }
                 }
+                string remoteIp = ((IPEndPoint)pending.Client.RemoteEndPoint).Address.ToString();
+                if (!IsAllowed(remoteIp)) { pending.Close(); continue; }
                 client = pending;
                 stream = client.GetStream();
+                if (!CheckAuth(stream)) { try { client.Close(); } catch { } continue; }
 
                 this.BeginInvoke(new Action(delegate
                 {
@@ -198,8 +237,11 @@ class ServerForm : Form
                     try { if (ctrlStream != null) ctrlStream.Close(); } catch { }
                     try { ctrlClient.Close(); } catch { }
                 }
+                string remoteIp = ((IPEndPoint)pending.Client.RemoteEndPoint).Address.ToString();
+                if (!IsAllowed(remoteIp)) { pending.Close(); continue; }
                 ctrlClient = pending;
                 ctrlStream = ctrlClient.GetStream();
+                if (!CheckAuth(ctrlStream)) { try { ctrlClient.Close(); } catch { } continue; }
 
                 ctrlWorker = new Thread(CtrlReceiveLoop);
                 ctrlWorker.IsBackground = true;
@@ -217,9 +259,7 @@ class ServerForm : Form
 
     void SendLoop()
     {
-        const long jpegQuality = 60L;
-        const int targetFps = 60;
-        TimeSpan frameInterval = TimeSpan.FromMilliseconds(1000.0 / targetFps);
+        TimeSpan frameInterval = TimeSpan.FromMilliseconds(1000.0 / Math.Max(5,targetFps));
         System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
 
         while (running && client != null && client.Connected)
@@ -268,6 +308,8 @@ class ServerForm : Form
 
                     stream.Write(header, 0, 16);
                     stream.Write(payload, 0, payload.Length);
+                    if (payload.Length > 220000 && jpegQuality > 35) jpegQuality -= 2;
+                    else if (payload.Length < 120000 && jpegQuality < 80) jpegQuality += 1;
 
                     if (prevBmp != null) prevBmp.Dispose();
                     prevBmp = (Bitmap)currentFull.Clone();
@@ -291,50 +333,72 @@ class ServerForm : Form
     void CtrlReceiveLoop()
     {
         BinaryReader br = new BinaryReader(ctrlStream);
+        BinaryWriter bw = new BinaryWriter(ctrlStream);
         while (running && ctrlClient != null && ctrlClient.Connected)
         {
             try
             {
-                byte type = br.ReadByte();
-                if (!allowControl) { SkipPayload(br, type); continue; }
+                int len = br.ReadInt32();
+                byte[] payload = br.ReadBytes(len);
+                int slen = br.ReadInt32();
+                byte[] sig = br.ReadBytes(slen);
+                if (!Verify(payload, sig)) continue;
 
-                if (type == 1) // move (video koord)
+                using (MemoryStream ms = new MemoryStream(payload))
+                using (BinaryReader pr = new BinaryReader(ms))
                 {
-                    int vx = br.ReadInt32();
-                    int vy = br.ReadInt32();
-                    // video → fiziksel
-                    int px = vx, py = vy;
-                    if (targetW > 0 && targetH > 0 && fullW > 0 && fullH > 0)
+                    byte type = pr.ReadByte();
+                    if (!allowControl && type != 9 && type != 31) continue;
+
+                    if (type == 1)
                     {
-                        px = (int)((long)vx * fullW / (long)targetW);
-                        py = (int)((long)vy * fullH / (long)targetH);
+                        int vx = pr.ReadInt32(); int vy = pr.ReadInt32();
+                        int px = vx, py = vy;
+                        if (targetW > 0 && targetH > 0 && fullW > 0 && fullH > 0)
+                        {
+                            px = (int)((long)vx * fullW / (long)targetW);
+                            py = (int)((long)vy * fullH / (long)targetH);
+                        }
+                        SetCursorPos(px, py);
                     }
-                    SetCursorPos(px, py);
-                }
-                else if (type == 2) // down
-                {
-                    int btn = br.ReadInt32();
-                    MouseClick(btn, true);
-                }
-                else if (type == 3) // up
-                {
-                    int btn = br.ReadInt32();
-                    MouseClick(btn, false);
-                }
-                else if (type == 4) // wheel
-                {
-                    int delta = br.ReadInt32();
-                    mouse_event(0x0800, 0, 0, delta, 0); // MOUSEEVENTF_WHEEL
-                }
-                else if (type == 5) // keydown
-                {
-                    int vk = br.ReadInt32();
-                    keybd_event((byte)vk, 0, 0, UIntPtr.Zero);
-                }
-                else if (type == 6) // keyup
-                {
-                    int vk = br.ReadInt32();
-                    keybd_event((byte)vk, 0, 0x0002, UIntPtr.Zero); // KEYEVENTF_KEYUP
+                    else if (type == 2) MouseClick(pr.ReadInt32(), true);
+                    else if (type == 3) MouseClick(pr.ReadInt32(), false);
+                    else if (type == 4) mouse_event(0x0800, 0, 0, pr.ReadInt32(), 0);
+                    else if (type == 5) keybd_event((byte)pr.ReadInt32(), 0, 0, UIntPtr.Zero);
+                    else if (type == 6) keybd_event((byte)pr.ReadInt32(), 0, 0x0002, UIntPtr.Zero);
+                    else if (type == 9)
+                    {
+                        long ts = pr.ReadInt64();
+                        SendSigned(bw, delegate(BinaryWriter ww){ ww.Write((byte)10); ww.Write(ts); });
+                    }
+                    else if (type == 20)
+                    {
+                        string name = pr.ReadString();
+                        int dlen = pr.ReadInt32();
+                        byte[] data = pr.ReadBytes(dlen);
+                        if (dlen <= 1024 * 1024)
+                        {
+                            string path = Path.Combine(Path.GetTempPath(), "remote_" + Path.GetFileName(name));
+                            File.WriteAllBytes(path, data);
+                        }
+                    }
+                    else if (type == 30)
+                    {
+                        string txt = pr.ReadString();
+                        try { this.BeginInvoke(new Action(delegate { Clipboard.SetText(txt); })); } catch { }
+                    }
+                    else if (type == 31)
+                    {
+                        string txt = "";
+                        try { txt = (string)this.Invoke(new Func<string>(delegate { return Clipboard.GetText(); })); } catch { }
+                        string copy = txt;
+                        SendSigned(bw, delegate(BinaryWriter ww){ ww.Write((byte)32); ww.Write(copy ?? ""); });
+                    }
+                    else if (type == 40)
+                    {
+                        string cmd = pr.ReadString();
+                        if (cmd == "notepad" || cmd == "calc" || cmd == "taskmgr" || cmd == "explorer") Process.Start(cmd);
+                    }
                 }
             }
             catch { break; }
@@ -363,7 +427,9 @@ class ServerForm : Form
     // --- Capture & Scale + Cursor ---
     Bitmap CaptureScreenWithCursorScaled(int tW, int tH)
     {
-        Rectangle bounds = Screen.PrimaryScreen.Bounds;
+        Screen sc = Screen.PrimaryScreen;
+        if (cmbMonitors != null && cmbMonitors.SelectedIndex >= 0 && cmbMonitors.SelectedIndex < Screen.AllScreens.Length) sc = Screen.AllScreens[cmbMonitors.SelectedIndex];
+        Rectangle bounds = sc.Bounds;
         Bitmap full = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
         using (Graphics g = Graphics.FromImage(full))
         {
@@ -462,7 +528,6 @@ class ServerForm : Form
                                 bw.Write(data);
                             }
                         }
-                        }
                         x += block;
                     }
                     y += block;
@@ -491,6 +556,92 @@ class ServerForm : Form
             y++;
         }
         return true;
+    }
+
+
+    bool Verify(byte[] payload, byte[] sig)
+    {
+        try
+        {
+            using (HMACSHA256 h = new HMACSHA256(sessionKey))
+            {
+                byte[] calc = h.ComputeHash(payload);
+                if (calc.Length != sig.Length) return false;
+                for (int i = 0; i < calc.Length; i++) if (calc[i] != sig[i]) return false;
+                return true;
+            }
+        }
+        catch { return false; }
+    }
+
+    void SendSigned(BinaryWriter w, Action<BinaryWriter> write)
+    {
+        using (MemoryStream ms = new MemoryStream())
+        using (BinaryWriter bw = new BinaryWriter(ms))
+        {
+            write(bw);
+            byte[] payload = ms.ToArray();
+            byte[] sig;
+            using (HMACSHA256 h = new HMACSHA256(sessionKey)) sig = h.ComputeHash(payload);
+            w.Write(payload.Length); w.Write(payload); w.Write(sig.Length); w.Write(sig); w.Flush();
+        }
+    }
+
+    bool CheckAuth(NetworkStream ns)
+    {
+        try
+        {
+            BinaryReader br = new BinaryReader(ns, Encoding.UTF8, true);
+            BinaryWriter bw = new BinaryWriter(ns, Encoding.UTF8, true);
+            int magic = br.ReadInt32();
+            string pin = br.ReadString();
+            bool ok = magic == 0x50494E31 && pin == currentPin;
+            bw.Write(ok);
+            bw.Flush();
+            return ok;
+        }
+        catch { return false; }
+    }
+
+    void ParseAllowList()
+    {
+        allowIps.Clear();
+        string t = txtAllow.Text == null ? "" : txtAllow.Text.Trim();
+        if (string.IsNullOrWhiteSpace(t)) return;
+        string[] arr = t.Split(',');
+        foreach (string x in arr) allowIps.Add(x.Trim());
+    }
+
+    bool IsAllowed(string ip)
+    {
+        ParseAllowList();
+        if (allowIps.Count == 0) return true;
+        foreach (string a in allowIps)
+        {
+            if (a == ip) return true;
+            if (a.EndsWith("/24"))
+            {
+                string p = a.Replace("/24", "");
+                int d = p.LastIndexOf('.');
+                if (d > 0 && ip.StartsWith(p.Substring(0, d + 1))) return true;
+            }
+        }
+        return false;
+    }
+
+    void KickClient()
+    {
+        try { if (client != null) client.Close(); } catch { }
+        try { if (ctrlClient != null) ctrlClient.Close(); } catch { }
+        lblStatus.Text = "İstemci bağlantısı kesildi.";
+    }
+
+    void ApplyProfile()
+    {
+        string p = cmbProfile == null ? "Balanced" : (cmbProfile.SelectedItem == null ? "Balanced" : cmbProfile.SelectedItem.ToString());
+        if (p == "Ultra") { targetW = 1920; targetH = 1080; targetFps = 60; jpegQuality = 75; }
+        else if (p == "Low-latency") { targetW = 960; targetH = 540; targetFps = 45; jpegQuality = 45; }
+        else { targetW = 1280; targetH = 720; targetFps = 60; jpegQuality = 60; }
     }
 
     // Win32 / Input

@@ -83,3 +83,42 @@ Serbestçe değiştirilebilir, dağıtılabilir ve ticari olarak kullanılabilir
 **Yazar:** ali  
 **Proje:** LanStreamControl-WinForms-60FPS  
 **Sürüm:** v1.0.0
+
+## 🆕 v1.1 Eklenenler (Güvenlik + Adaptif Yayın + Yönetim)
+- PIN eşleştirme: İstemci video ve kontrol bağlantısında PIN doğrulaması yapar.
+- Kontrol paketi imzalama: Control kanalındaki mesajlar HMAC-SHA256 ile imzalanır.
+- Allow list ve hızlı bağlantı kesme: Server IP izin listesi + `Disconnect` butonu.
+- Adaptif kalite: JPEG kalite seviyesi ağ koşuluna göre 35-80 aralığında ayarlanır.
+- Yayın profilleri: `Ultra / Balanced / Low-latency` seçimleri.
+- Çoklu monitör seçimi: Server tarafında yayınlanacak monitör seçilebilir.
+- RTT/Jitter metriği: Client canlı bağlantı gecikmesi ölçümü gösterir.
+- Favoriler + otomatik yeniden bağlanma: Client son bağlantıları saklar, kısa kopmalarda yeniden bağlanabilir.
+- Uzaktan yardımcı araçlar: Dosya gönderimi (1MB altı), clipboard gönder/al, whitelist komut tetikleme.
+- Tam ekran kısayolu: `Ctrl + Alt + F`.
+
+## 🧪 Testler
+```bash
+python -m unittest tests/test_protocol.py
+```
+
+## 🌐 Advanced 3D Viewer (Yeni)
+Bu repoya ayrıca modern web tabanlı bir 3D görüntüleyici eklendi (`viewer/`).
+
+### Öne çıkanlar
+- Orbit / Pan / Zoom + Auto-rotate
+- Standart bakış açıları (ön/arka/sol/sağ/üst)
+- Poster + yükleme ilerleme ekranı
+- PBR materyal, HDR çevre ışığı, gölge/ışık kontrolü
+- GLB/GLTF/OBJ/STL yükleme, Draco + Meshopt desteği
+- Ölçüm modu (2 nokta arası mesafe)
+- Section plane (kesit düzlemi)
+- Animasyon kontrolü (play/pause/speed)
+- Hotspot ekleme
+- AR butonu (WebXR) + Scene Viewer bağlantısı
+
+### Çalıştırma
+```bash
+cd viewer
+python -m http.server 8080
+```
+Sonra `http://localhost:8080` açın.
